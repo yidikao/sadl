@@ -4,9 +4,10 @@ import os
 
 from multiprocessing import Pool
 from tqdm import tqdm
-from keras.models import load_model, Model
+from tensorflow.keras.models import load_model, Model
+from tensorflow.keras import models, layers
 from scipy.stats import gaussian_kde
-
+import sys
 from utils import *
 
 
@@ -66,9 +67,9 @@ def get_ats(
         ats (list): List of (layers, inputs, neuron outputs).
         pred (list): List of predicted classes.
     """
-
+    _ = model.predict(dataset[0:1], verbose=0)
     temp_model = Model(
-        inputs=model.input,
+        inputs=model.inputs[0],
         outputs=[model.get_layer(layer_name).output for layer_name in layer_names],
     )
 
@@ -76,7 +77,7 @@ def get_ats(
     if is_classification:
         p = Pool(num_proc)
         print(prefix + "Model serving")
-        pred = model.predict_classes(dataset, batch_size=batch_size, verbose=1)
+        pred = np.argmax(model.predict(dataset, batch_size=batch_size, verbose=1), axis=-1)
         if len(layer_names) == 1:
             layer_outputs = [
                 temp_model.predict(dataset, batch_size=batch_size, verbose=1)
@@ -219,7 +220,7 @@ def fetch_dsa(model, x_train, x_target, target_name, layer_names, args):
     dsa = []
 
     print(prefix + "Fetching DSA")
-    for i, at in enumerate(tqdm(target_ats)):
+    for i, at in enumerate(tqdm(target_ats, total=len(target_ats), desc="DSA", unit="sample", file=sys.stderr)):
         label = target_pred[i]
         a_dist, a_dot = find_closest_at(at, train_ats[class_matrix[label]])
         b_dist, _ = find_closest_at(
@@ -264,7 +265,7 @@ def _get_kdes(train_ats, train_pred, class_matrix, args):
                 print(
                     warn("ats were removed by threshold {}".format(args.var_threshold))
                 )
-                break
+                continue
             kdes[label] = gaussian_kde(refined_ats)
 
     else:
@@ -286,7 +287,7 @@ def _get_kdes(train_ats, train_pred, class_matrix, args):
 
 def _get_lsa(kde, at, removed_cols):
     refined_at = np.delete(at, removed_cols, axis=0)
-    return np.asscalar(-kde.logpdf(np.transpose(refined_at)))
+    return float(-kde.logpdf(np.transpose(refined_at)))
 
 
 def fetch_lsa(model, x_train, x_target, target_name, layer_names, args):
@@ -323,6 +324,9 @@ def fetch_lsa(model, x_train, x_target, target_name, layer_names, args):
     if args.is_classification:
         for i, at in enumerate(tqdm(target_ats)):
             label = target_pred[i]
+            if label not in kdes:
+                print(warn(f"No KDE for label {label}, skipping sample {i}"))
+                continue
             kde = kdes[label]
             lsa.append(_get_lsa(kde, at, removed_cols))
     else:
